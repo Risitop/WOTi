@@ -154,6 +154,7 @@ class Transmorph:
                  method: str = "ot",
                  metric: str = "sqeuclidean",
                  geodesic: bool = False,
+                 different_spaces: bool = False,
                  normalize: bool = False,
                  n_comps: int = -1,
                  entropy: bool = False,
@@ -169,6 +170,7 @@ class Transmorph:
         self.method = method
         self.metric = metric
         self.geodesic = geodesic
+        self.different_spaces = different_spaces
         self.normalize = normalize
         self.n_comps = n_comps
         self.entropy = entropy
@@ -291,6 +293,9 @@ class Transmorph:
             self.method == TR_METHOD_GROMOV
             and self.unbalanced == True), \
             "Unbalanced is incompatible with Gromov-Wasserstein."
+
+        assert not (self.different_spaces and self.n_hops > 0),\
+            "Cannot use subsambling if datasets are located in different spaces."
 
 
     def __str__(self) -> str:
@@ -641,7 +646,8 @@ class Transmorph:
         self._log("Projecting dataset...")
         xt = transform(self.transport,
                        jitter=jitter,
-                       jitter_std=jitter_std)
+                       jitter_std=jitter_std,
+                       different_spaces=self.different_spaces)
         assert not np.isnan(np.sum(xt)),\
             "Integrated matrix contains NaN values. Please ensure the input "\
             "is correct, and try tuning regularization parameters."

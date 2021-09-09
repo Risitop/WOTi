@@ -13,7 +13,9 @@ from .constants import *
 def transform(
         transport,
         jitter: bool = True,
-        jitter_std: float = .01) -> np.ndarray:
+        jitter_std: float = .01,
+        different_spaces: bool = False
+) -> np.ndarray:
     """
     Optimal transport integration, inspired by (Ferradans 2013).
 
@@ -26,19 +28,45 @@ def transform(
     -----------
     TODO: docstring
     """
+    # Preparing data for numba
     tdata_x, tdata_y, Pxy = transport
-    Pxy = check_array(Pxy.toarray(), dtype=np.float32, order="C")
-    x_int = _transform(
-        Pxy,
-        np.float32(tdata_x.X),
-        np.float32(tdata_x.weights()),
-        tdata_x.anchors,
-        tdata_x.anchors_map,
-        np.float32(tdata_y.X),
-        np.float32(tdata_y.weights()),
-        tdata_y.anchors,
-    )
 
+    Pxy = check_array(Pxy.toarray(), dtype=np.float32, order="C")
+    X_data = np.float32(tdata_x.X)
+    X_weights = np.float32(tdata_x.weights())
+    Y_data = np.float32(tdata_y.X)
+    Y_weights = np.float32(tdata_y.weights())
+
+    # Piping into the right scheme
+    if not different_spaces:
+        X_anchors = tdata_x.anchors
+        X_anchors_map = tdata_x.anchors_map
+        Y_anchors = tdata_y.anchors
+        x_int = _transform_same_space(
+            Pxy,
+            X_data,
+            X_weights,
+            X_anchors,
+            X_anchors_map,
+            Y_data,
+            Y_weights,
+            Y_anchors
+        )
+    else:
+        # Last parameters check
+        assert all(X_weights > 0),\
+            "Error: integration between different spaces with 0-weighted points."
+        assert all(Y_weights > 0),\
+            "Error: integration between different spaces with 0-weighted points."
+        x_int = _transform_different_space(
+            Pxy,
+            X_data,
+            X_weights,
+            Y_data,
+            Y_weights,
+        )
+
+    # Adding small variation
     if jitter:
         stdev = jitter_std * (np.max(x_int, axis=0) - np.min(x_int, axis=0))
         x_int = x_int + np.random.randn(*x_int.shape) * stdev
@@ -47,14 +75,30 @@ def transform(
 
 
 @njit
-def _transform(Pxy,
-               x,
-               xw,
-               x_anchors_sel,
-               x_mapping,
-               y,
-               yw,
-               y_anchors_sel):
+def _transform_different_space(
+        Pxy,
+        x,
+        xw,
+        y,
+        yw,
+):
+    # Computing displacement
+    T = Pxy @ np.diag(1 / yw)
+    return np.diag(1 / T.sum(axis=1)) @ T @ y
+
+
+@njit
+def _transform_same_space(
+        Pxy,
+        x,
+        xw,
+        x_anchors_sel,
+        x_mapping,
+        y,
+        yw,
+        y_anchors_sel
+):
+    # Selecting non-zero weighted points
     sel_x, sel_y = xw > 0, yw > 0
     x_anchors = x[x_anchors_sel]
     y_anchors = y[y_anchors_sel]
@@ -63,14 +107,21 @@ def _transform(Pxy,
         y_anchors[sel_y],
         Pxy[sel_x][:,sel_y]
     )
-    x_anchors_int = x_anchors.copy() # TODO: Fix the case GW/specific types
+
+    # Integration buffer
+    x_anchors_int = x_anchors.copy()
+
+    # Computing displacement
     T = Pxy_nz @ np.diag(1 / yw_nz)
     x_anchors_int[sel_x] = np.diag(1 / T.sum(axis=1)) @ T @ y_anchors_nz
     delta_int = x_anchors_int - x_anchors
-    small_idx = np.array([
+
+    # Moving points
+    small_idx = np.array([ # i -> anchor of i mapping
         np.sum(x_anchors_sel[:x_mapping[i]])
         for i in range(len(x))
     ])
+    # TODO: Multi-anchor case
     return x + delta_int[small_idx]
 
 
